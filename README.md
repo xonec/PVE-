@@ -1,27 +1,34 @@
-＃ PVE虚拟机模板脚本介绍
+一、精准模式（公钥登录优先，推荐）
  
-该脚本专为Proxmox VE（PVE）虚拟化平台设计，可快速创建主流Linux发行版的虚拟机模板，支持交互与批量操作，大幅简化模板制作流程。
+直接复制命令到Proxmox节点终端，替换括号内参数即可：
  
-核心功能
+bash
+  
+
+# 示例1：Ubuntu2404 + local存储 + VMID8006
+wget -qO- https://raw.githubusercontent.com/xonec/PVE-/refs/heads/main/create-cloud-templates.sh | bash -s -- local vmbr0 8006 Ubuntu2404 ~/.ssh/id_rsa.pub
+
+
  
-1. 多发行版支持：覆盖10种常用Linux系统，包括Debian 11/12、CentOS 8/9 Stream、Ubuntu 22.04/24.04、AlmaLinux 8/9、Rocky Linux 8/9，满足不同场景需求。
-2. 双模式操作：
-- 交互模式：适合新手，通过菜单选择发行版，手动输入网络接口（默认vmbr0）、存储（默认local）和VMID，步骤清晰。
-- 批量模式：一键下载所有10个系统模板，VMID从8000自动递增，无需手动干预，高效便捷。
-3. 自动化流程：脚本集成“检查并销毁重复VMID→下载系统镜像→创建虚拟机→导入磁盘→配置CloudInit与启动项→转换为模板→清理临时文件”全流程，无需手动执行中间步骤。
-4. 灵活配置：支持自定义网络接口（如vmbr1）和存储位置（如local-lvm），适配不同PVE环境；创建的虚拟机默认配置2核CPU、2GB内存，后续可按需调整。
+二、批量模式（一键创建所有11种系统）
  
-使用方法
+bash
+  
+
+# 示例1：默认配置（2核2G30G，root用户）
+wget -qO- https://raw.githubusercontent.com/xonec/PVE-/refs/heads/main/create-cloud-templates.sh | bash -s -- local vmbr0 8000 2 2048 30G root StrongPwd@2024
+ 
  
-1. 准备工作：将脚本复制保存为 templates.sh ，上传至PVE服务器根目录。
-2. 赋予权限：执行命令 chmod +x templates.sh ，授予脚本可执行权限。
-3. 运行脚本：
-- 交互模式：直接执行 ./templates.sh ，按提示选择发行版、输入参数即可。
-- 批量模式：运行脚本后无需选择发行版，脚本自动从8000开始分配VMID，批量创建所有模板。
+三、交互模式（自动下载后进入手动配置）
  
-注意事项
+bash
+  
+
+wget -qO- https://raw.githubusercontent.com/xonec/PVE-/refs/heads/main/create-cloud-templates.sh | bash
+ 
  
-- 运行前需确保PVE服务器网络通畅，脚本依赖网络下载系统镜像（镜像源自官方源，安全可靠）。
-- 若目标VMID已存在，交互模式会提示确认是否销毁，批量模式则自动销毁，避免冲突。
-- 磁盘导入后默认检查 /var/lib/vz/images/$vmid/ 路径，若存储路径特殊（如使用NFS存储），需手动确认磁盘位置。
+关键说明
  
+1. 命令通过 wget -qO- 直接下载脚本并管道给 bash 执行，无需额外保存文件
+2.  --  用于分隔 bash 参数和脚本参数，避免冲突
+3. 运行前确保Proxmox节点已安装依赖： apt install -y wget libguestfs-tools （仅需执行一次）
