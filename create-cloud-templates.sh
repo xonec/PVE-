@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ==============================================
-# 整合版 Proxmox VE 云模板创建脚本（终极优化：精准模式直接用系统名）
-# 核心更新：精准模式支持「直接输入系统名」，无需记忆偏移量，公钥登录优先
+# 整合版 Proxmox VE 云模板创建脚本（优化精准模式：支持自定义镜像链接）
+# 核心更新：精准模式可直接传镜像URL，自动提取链接文件名作为模板名
 # ==============================================
 
 # -------------------------- 默认配置（可修改）--------------------------
@@ -32,7 +32,114 @@ declare -A OS_IMAGES=(
     ["Fedora39"]="https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2"
 )
 
-# -------------------------- 工具函数 --------------------------
+# -------------------------- 工具函数（新增：提取镜像文件名）--------------------------
+extract_image_name() {
+    local url="$1"
+    # 从URL中提取文件名（去除参数和路径），并去掉后缀作为模板名
+    local filename=$(basename "$url" | sed -E 's/\?.*$//' | sed -E 's/\.(qcow2|img|raw)$//i')
+    echo "Template-$filename"
+}
+
+# -------------------------- 精准模式（核心修改）--------------------------
+# 支持两种用法：
+# 1. 原有系统名模式：bash script.sh 存储池 网桥 VMID 系统名 公钥路径
+# 2. 新增镜像URL模式：bash script.sh 存储池 网桥 VMID 镜像URL 公钥路径
+precision_mode() {
+    local storage="$1"
+    local bridge="$2"
+    local vmid="$3"
+    local input="$4"  # 可是系统名或镜像URL
+    local ssh_key_path="$5"
+
+    # 校验基础参数
+    check_storage "$storage"
+    check_ssh_key "$ssh_key_path"
+
+    local os_name=""
+    local image_url=""
+    local template_name=""
+
+    # 判断输入是系统名还是镜像URL
+    if [[ "$input" =~ ^https?:// ]]; then
+        # 镜像URL模式：自动提取模板名
+        image_url="$input"
+        template_name=$(extract_image_name "$image_url")
+        echo "ℹ️ 识别为镜像URL，自动生成模板名：$template_name"
+    else
+        # 原有系统名模式
+        check_os_name "$input"
+        os_name="$input"
+        image_url="${OS_IMAGES[$os_name]}"
+        template_name="Template-$os_name"
+    fi
+
+    # 使用默认硬件配置创建模板（可按需修改默认值）
+    qm create "$vmid" \
+        --name "$template_name" \
+        --cpu cputype=kvm64 \
+        --cores "$DEFAULT_CPU_CORES" \
+        --memory "$DEFAULT_MEMORY" \
+        --balloon 0 \
+        --ostype l26 \
+        --scsihw virtio-scsi-pci
+
+    # 下载并导入镜像
+    local temp_image="/tmp/$(basename "$image_url" | sed -E 's/\?.*$//')"
+    download_image "$image_url" "$temp_image"
+    qm importdisk "$vmid" "$temp_image" "$storage" --format qcow2
+    qm set "$vmid" --scsi0 "$storage:vm-$vmid-disk-0"
+    qm resize "$vmid" scsi0 "$DEFAULT_DISK"
+
+    # 配置Cloud-Init
+    config_cloudinit "$vmid" "$DEFAULT_USER" "$DEFAULT_PASSWORD" "$bridge" "$ssh_key_path"
+
+    # 转换为模板
+    qm template "$vmid"
+    rm -f "$temp_image"
+
+    echo -e "✅ 模板创建完成：$template_name（VMID: $vmid）"
+    echo "🔑 登录方式：ssh $DEFAULT_USER@VM_IP -i $ssh_key_path"
+    echo -e "==================================================\n"
+}
+
+# -------------------------- 主程序（修改参数判断逻辑）--------------------------
+main() {
+    check_root
+    check_qm
+
+    # 命令行参数判断（精准模式支持两种输入）
+    if [ $# -eq 5 ]; then
+        # 精准模式用法：
+        # 1. 系统名模式：bash script.sh 存储池 网桥 VMID 系统名 公钥路径
+        # 2. 镜像URL模式：bash script.sh 存储池 网桥 VMID 镜像URL 公钥路径
+        precision_mode "$1" "$2" "$3" "$4" "$5"
+        exit 0
+    elif [ $# -eq 8 ]; then
+        # 批量模式（命令行）：bash script.sh 存储池 网桥 VMID起始值 CPU 内存 磁盘 用户名 密码
+        batch_mode "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+        exit 0
+    elif [ $# -ne 0 ]; then
+        echo "❌ 无效参数！"
+        echo "精准模式用法1（系统名）：bash $0 存储池 网桥 VMID 系统名 公钥路径"
+        echo "示例：bash $0 local vmbr0 8004 Ubuntu2204 ~/.ssh/id_rsa.pub"
+        echo "精准模式用法2（自定义镜像）：bash $0 存储池 网桥 VMID 镜像URL 公钥路径"
+        echo "示例：bash $0 local vmbr0 8005 https://xxx.com/custom-image.qcow2 ~/.ssh/id_rsa.pub"
+        echo "支持的系统名：${!OS_IMAGES[*]}"
+        exit 1
+    fi
+
+    # 菜单模式（保持不变）
+    show_menu
+    case $mode in
+        1) batch_mode "$DEFAULT_STORAGE" "$DEFAULT_BRIDGE" "$DEFAULT_VMID" "$DEFAULT_CPU_CORES" "$DEFAULT_MEMORY" "$DEFAULT_DISK" "$DEFAULT_USER" "$DEFAULT_PASSWORD" ;;
+        2) interactive_mode ;;
+        3) echo "❌ 精准模式请通过命令行参数运行！支持系统名或自定义镜像URL两种方式" ;;
+        4) echo "👋 退出脚本"; exit 0 ;;
+        *) echo "❌ 无效选择"; exit 1 ;;
+    esac
+}
+
+# -------------------------- 原有工具函数（保持不变）--------------------------
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         echo "❌ 必须以root用户运行！" >&2
@@ -189,12 +296,11 @@ create_template() {
     echo -e "==================================================\n"
 }
 
-# -------------------------- 模式选择与执行 --------------------------
 show_menu() {
     echo -e "\n====== Proxmox VE 模板创建脚本（整合版）======"
     echo "1. 批量模式：一键创建所有10种系统模板（密码登录）"
     echo "2. 交互模式：手动选择系统并配置参数（支持公钥/密码）"
-    echo "3. 精准模式：命令行直接指定系统名创建（公钥登录优先）"
+    echo "3. 精准模式：命令行直接指定系统名或镜像URL创建（公钥登录优先）"
     echo "4. 退出"
     echo -e "=============================================\n"
     read -p "请选择模式（1-4）：" mode
@@ -230,120 +336,4 @@ interactive_mode() {
 
     # 基础配置
     read -p "请输入存储池名称（默认：$DEFAULT_STORAGE）：" storage
-    storage=${storage:-$DEFAULT_STORAGE}
-    check_storage "$storage"
-
-    read -p "请输入网络桥接名称（默认：$DEFAULT_BRIDGE）：" bridge
-    bridge=${bridge:-$DEFAULT_BRIDGE}
-
-    read -p "请输入VMID（默认：$DEFAULT_VMID）：" vmid
-    vmid=${vmid:-$DEFAULT_VMID}
-
-    read -p "请输入CPU核心数（默认：$DEFAULT_CPU_CORES）：" cpu
-    cpu=${cpu:-$DEFAULT_CPU_CORES}
-    read -p "请输入内存大小(MB)（默认：$DEFAULT_MEMORY）：" memory
-    memory=${memory:-$DEFAULT_MEMORY}
-    read -p "请输入磁盘大小（默认：$DEFAULT_DISK）：" disk
-    disk=${disk:-$DEFAULT_DISK}
-
-    read -p "请输入Cloud-Init用户名（默认：$DEFAULT_USER）：" user
-    user=${user:-$DEFAULT_USER}
-
-    # 登录方式选择
-    read -p "是否使用SSH公钥登录？(y/n，默认n) " use_key
-    use_key=${use_key:-n}
-    local ssh_key_path=""
-    if [[ $use_key =~ ^[Yy]$ ]]; then
-        read -p "请输入SSH公钥文件路径（如~/.ssh/id_rsa.pub）：" ssh_key_path
-        check_ssh_key "$ssh_key_path"
-        SSH_PWAUTH="false"
-    else
-        read -p "请输入登录密码（默认：$DEFAULT_PASSWORD）：" password
-        password=${password:-$DEFAULT_PASSWORD}
-        SSH_PWAUTH="true"
-    fi
-
-    # 系统选择（直接显示系统名）
-    echo -e "\n支持的系统列表："
-    local i=1
-    for os_name in "${!OS_IMAGES[@]}"; do
-        echo "$i. $os_name"
-        ((i++))
-    done
-    read -p "请选择要创建的系统（输入序号，输入all创建全部）：" choice
-
-    if [ "$choice" = "all" ]; then
-        read -p "请输入批量模式VMID起始值（默认：$DEFAULT_VMID）：" vmid_start
-        vmid_start=${vmid_start:-$DEFAULT_VMID}
-        batch_mode "$storage" "$bridge" "$vmid_start" "$cpu" "$memory" "$disk" "$user" "${password:-$DEFAULT_PASSWORD}"
-    else
-        local idx=$((choice-1))
-        local os_names=("${!OS_IMAGES[@]}")
-        if [ $idx -ge 0 ] && [ $idx -lt ${#os_names[@]} ]; then
-            local os_name="${os_names[$idx]}"
-            local url="${OS_IMAGES[$os_name]}"
-            create_template "$vmid" "$os_name" "$url" "$storage" "$bridge" "$cpu" "$memory" "$disk" "$user" "${password:-$DEFAULT_PASSWORD}" "$ssh_key_path"
-        else
-            echo "❌ 无效选择"
-            exit 1
-        fi
-    fi
-}
-
-# 核心优化：精准模式（命令行参数：存储池 网桥 VMID 系统名 公钥路径）
-precision_mode() {
-    local storage="$1"
-    local bridge="$2"
-    local vmid="$3"
-    local os_name="$4"
-    local ssh_key_path="$5"
-
-    # 校验参数
-    check_storage "$storage"
-    check_ssh_key "$ssh_key_path"
-    check_os_name "$os_name"
-
-    local url="${OS_IMAGES[$os_name]}"
-    # 使用默认硬件配置（可按需修改脚本默认值）
-    create_template \
-        "$vmid" "$os_name" "$url" \
-        "$storage" "$bridge" \
-        "$DEFAULT_CPU_CORES" "$DEFAULT_MEMORY" "$DEFAULT_DISK" \
-        "$DEFAULT_USER" "$DEFAULT_PASSWORD" \
-        "$ssh_key_path"
-}
-
-# -------------------------- 主程序 --------------------------
-main() {
-    check_root
-    check_qm
-
-    # 命令行参数判断（精准模式：直接用系统名）
-    if [ $# -eq 5 ]; then
-        # 精准模式用法：bash script.sh 存储池 网桥 VMID 系统名 公钥路径
-        precision_mode "$1" "$2" "$3" "$4" "$5"
-        exit 0
-    elif [ $# -eq 8 ]; then
-        # 批量模式（命令行）：bash script.sh 存储池 网桥 VMID起始值 CPU 内存 磁盘 用户名 密码
-        batch_mode "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
-        exit 0
-    elif [ $# -ne 0 ]; then
-        echo "❌ 无效参数！"
-        echo "精准模式用法：bash $0 存储池 网桥 VMID 系统名 公钥路径"
-        echo "示例：bash $0 local vmbr0 8004 Ubuntu2204 ~/.ssh/id_rsa.pub"
-        echo "支持的系统名：${!OS_IMAGES[*]}"
-        exit 1
-    fi
-
-    # 菜单模式
-    show_menu
-    case $mode in
-        1) batch_mode "$DEFAULT_STORAGE" "$DEFAULT_BRIDGE" "$DEFAULT_VMID" "$DEFAULT_CPU_CORES" "$DEFAULT_MEMORY" "$DEFAULT_DISK" "$DEFAULT_USER" "$DEFAULT_PASSWORD" ;;
-        2) interactive_mode ;;
-        3) echo "❌ 精准模式请通过命令行参数运行！用法：bash $0 存储池 网桥 VMID 系统名 公钥路径" ;;
-        4) echo "👋 退出脚本"; exit 0 ;;
-        *) echo "❌ 无效选择"; exit 1 ;;
-    esac
-}
-
-main "$@"
+    storage
