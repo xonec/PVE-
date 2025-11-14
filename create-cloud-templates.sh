@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+v#!/usr/bin/env bash
 # =============================================================================
 #  Proxmox VE 云模板创建脚本  v2.1.0  (2025-06 优化版)
 #  1) 自动检测并安装缺失依赖
@@ -232,22 +232,31 @@ download_images_parallel(){
 # -------------------- Cloud-Init 配置 --------------------
 config_cloudinit(){
   local vmid="$1" user="$2" pass="$3" bridge="$4" sshkey="${5:-}"
+
   qm set "$vmid" --ciuser "$user" --cipassword "$pass" \
         --net0 "virtio,bridge=$bridge" --boot order="scsi0;net0" \
         --serial0 socket --vga serial0
-  if [[ -n "$sshkey" ]];then
-    qm set "$vmid" --sshkeys <(cat "$sshkey")
-    log_success "已注入 SSH 公钥"
-  fi
+
+  [[ -n "$sshkey" ]] && qm set "$vmid" --sshkeys <(cat "$sshkey")
+
+  # 正确提取磁盘路径
   local cloud_disk
-  cloud_disk=$(qm config "$vmid" | awk '/scsi0/ {print $2}' | cut -d: -f1)
+  cloud_disk=$(qm config "$vmid" | awk '/scsi0/ {print $2}' | cut -d: -f2-)
+  cloud_disk="/var/lib/vz/images/$cloud_disk"
+
+  [[ -f "$cloud_disk" ]] || { log_error "磁盘文件不存在：$cloud_disk"; return 1; }
+
   local mnt="/tmp/pve-ci-$$"
   mkdir -p "$mnt"
+
   if guestmount -a "$cloud_disk" -m /dev/sda1 "$mnt" 2>/dev/null || \
-     guestmount -a "$cloud_disk" -m /dev/vda1 "$mnt" 2>/dev/null;then
+     guestmount -a "$cloud_disk" -m /dev/vda1 "$mnt" 2>/dev/null; then
     sed -i "s/^ssh_pwauth:.*/ssh_pwauth: $SSH_PWAUTH/" "$mnt/etc/cloud/cloud.cfg" 2>/dev/null || true
     guestunmount "$mnt"
+  else
+    log_warning "guestmount 失败，跳过 cloud-init 微调"
   fi
+
   rmdir "$mnt" 2>/dev/null || true
 }
 
