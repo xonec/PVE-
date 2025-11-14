@@ -244,22 +244,32 @@ download_images_parallel(){
 # -------------------- Cloud-Init 配置 --------------------
 config_cloudinit(){
   local vmid="$1" user="$2" pass="$3" bridge="$4" sshkey="$5" cloud_disk="$6"
-  qm set "$vmid" --ciuser "$user" --cipassword "$pass" \
+
+  # 1. 基础 cloud-init 配置（用户、密码、SSH 密钥、网卡桥接）
+  qm set "$vmid" \
+        --ciuser "$user" \
+        --cipassword "$pass" \
         --net0 "virtio,bridge=$bridge" \
-        --serial0 socket --vga serial0
+        --serial0 socket \
+        --vga serial0 \
+        --ipconfig0 ip=dhcp          # <-- 关键：DHCP 获取地址
+
   [[ -n "$sshkey" ]] && qm set "$vmid" --sshkeys <(cat "$sshkey")
+
+  # 2. 如果镜像内还有旧网络配置，一并清理并确保 DHCP 生效
   [[ -f "$cloud_disk" ]] || { log_error "磁盘文件不存在：$cloud_disk"; return 1; }
   local mnt="/tmp/pve-ci-$$"
   mkdir -p "$mnt"
   if guestmount -a "$cloud_disk" -m /dev/sda1 "$mnt" 2>/dev/null || \
      guestmount -a "$cloud_disk" -m /dev/vda1 "$mnt" 2>/dev/null; then
-    sed -i "s/^ssh_pwauth:.*/ssh_pwauth: $SSH_PWAUTH/" "$mnt/etc/cloud/cloud.cfg" 2>/dev/null || true
-    chroot "$mnt" systemctl enable qemu-guest-agent.service 2>/dev/null || \
-    ln -s /usr/lib/systemd/system/qemu-guest-agent.service \
-          "$mnt/etc/systemd/system/multi-user.target.wants/" 2>/dev/null || true
+    # 让 cloud-init 使用 DHCP 重新配置网络
+    sed -i 's/^ssh_pwauth:.*/ssh_pwauth: '"$SSH_PWAUTH"'/' "$mnt/etc/cloud/cloud.cfg"
+    # 确保 systemd-networkd / NetworkManager 不残留静态 IP
+    rm -f "$mnt/etc/systemd/network/"*.network
+    rm -f "$mnt/etc/NetworkManager/system-connections/"*
     guestunmount "$mnt"
   else
-    log_error "guestmount 失败，放弃 cloud-init 微调"; return 1
+    log_warning "guestmount 失败，跳过网络微调"
   fi
   rmdir "$mnt" 2>/dev/null || true
 }
