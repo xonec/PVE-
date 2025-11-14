@@ -252,6 +252,9 @@ config_cloudinit(){
   if guestmount -a "$cloud_disk" -m /dev/sda1 "$mnt" 2>/dev/null || \
      guestmount -a "$cloud_disk" -m /dev/vda1 "$mnt" 2>/dev/null; then
     sed -i "s/^ssh_pwauth:.*/ssh_pwauth: $SSH_PWAUTH/" "$mnt/etc/cloud/cloud.cfg" 2>/dev/null || true
+    chroot "$mnt" systemctl enable qemu-guest-agent.service 2>/dev/null || \
+    ln -s /usr/lib/systemd/system/qemu-guest-agent.service \
+          "$mnt/etc/systemd/system/multi-user.target.wants/" 2>/dev/null || true
     guestunmount "$mnt"
   else
     log_warning "guestmount 失败，跳过 cloud-init 微调"
@@ -263,7 +266,7 @@ config_cloudinit(){
 create_vm_base(){
   local vmid="$1" name="$2" cpu="$3" mem="$4"
   qm create "$vmid" --name "$name" --cpu cputype=kvm64 --cores "$cpu" \
-        --memory "$mem" --balloon 0 --ostype l26 --scsihw virtio-scsi-pci
+        --memory "$mem" --balloon 0 --ostype l26 --scsihw virtio-scsi-pci --agent 1
   log_success "基础 VM 创建：$name (VMID:$vmid)"
 }
 
