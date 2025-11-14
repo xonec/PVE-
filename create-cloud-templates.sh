@@ -1,6 +1,6 @@
-v#!/usr/bin/env bash
+#!/usr/bin/env bash
 # =============================================================================
-#  Proxmox VE 云模板创建脚本  v2.1.0  (2025-06 优化版)
+#  Proxmox VE 云模板创建脚本  v2.1.0-patch  (2025-06 修复版)
 #  1) 自动检测并安装缺失依赖
 #  2) 根据出口 IP 自动选择国内外镜像站
 #  3) 并行下载 + 本地缓存 + 断点续传
@@ -9,9 +9,8 @@ v#!/usr/bin/env bash
 set -o pipefail
 shopt -s extglob nameref
 
-readonly VERSION="2.1.0"
+readonly VERSION="2.1.0-patch"
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly LOG_FILE="/var/log/pve-template-maker.log"
 readonly CACHE_DIR="/var/cache/pve-templates"
 readonly TEMP_DIR="/tmp/pve-templates-$$"
 
@@ -29,6 +28,11 @@ readonly DEFAULT_DISK="30G"
 readonly DEFAULT_USER="root"
 readonly DEFAULT_PASSWORD="changeme"
 readonly SSH_PWAUTH="false"
+
+# -------------------- 日志文件可写性处理 --------------------
+readonly LOG_FILE=$(touch /var/log/pve-template-maker.log 2>/dev/null \
+                    && echo /var/log/pve-template-maker.log \
+                    || echo /dev/null)
 
 # -------------------- 日志系统 --------------------
 log(){
@@ -49,6 +53,10 @@ cleanup(){
   if [[ -n "${MOUNT_DIR:-}" ]] && mountpoint -q "$MOUNT_DIR"; then
     guestunmount "$MOUNT_DIR" 2>/dev/null || true
     rmdir "$MOUNT_DIR" 2>/dev/null || true
+  fi
+  # 清理临时 VM（如果中断时已创建）
+  if [[ -n "${CUR_VMID:-}" ]]; then
+    qm destroy "$CUR_VMID" --purge &>/dev/null || true
   fi
 }
 handle_error(){
@@ -96,11 +104,10 @@ check_dependencies(){
 
 # -------------------- 镜像地址智能替换 --------------------
 select_mirror(){
-  local domain="$1"          # 第一行先读参数
-  local upstream="$domain"   # 备份原域名
-  # 判断国内外
+  local domain="$1"
+  local upstream="$domain"
   local ipinfo
-  ipinfo=$(curl -s4 --max-time 2 https://ipinfo.io/country || true)
+  ipinfo=$(curl -s4 -m 5 --retry 2 https://ipinfo.io/country || true)
   if [[ "$ipinfo" == "CN" ]]; then
     case "$upstream" in
       debian.org)      domain="mirrors.huaweicloud.com" ;;
@@ -190,8 +197,7 @@ read_with_default(){
 download_image(){
   local url="$1" output="$2" os_name="${3:-}"
   mkdir -p "$CACHE_DIR"
-  local cache_fn
-  cache_fn=$(echo -n "$url" | md5sum | cut -d' ' -f1)
+  local cache_fn="${os_name:-unknown}-$(echo -n "$url" | md5sum | cut -d' ' -f1)"
   local cached="$CACHE_DIR/$cache_fn.qcow2"
   if [[ -f "$cached" ]];then
     log_info "命中缓存：$cached"
@@ -231,24 +237,18 @@ download_images_parallel(){
 
 # -------------------- Cloud-Init 配置 --------------------
 config_cloudinit(){
-  local vmid="$1" user="$2" pass="$3" bridge="$4" sshkey="${5:-}"
+  local vmid="$1" user="$2" pass="$3" bridge="$4" sshkey="$5" cloud_disk="$6"
 
   qm set "$vmid" --ciuser "$user" --cipassword "$pass" \
-        --net0 "virtio,bridge=$bridge" --boot order="scsi0;net0" \
+        --net0 "virtio,bridge=$bridge" \
         --serial0 socket --vga serial0
 
   [[ -n "$sshkey" ]] && qm set "$vmid" --sshkeys <(cat "$sshkey")
-
-  # 正确提取磁盘路径
-  local cloud_disk
-  cloud_disk=$(qm config "$vmid" | awk '/scsi0/ {print $2}' | cut -d: -f2-)
-  cloud_disk="/var/lib/vz/images/$cloud_disk"
 
   [[ -f "$cloud_disk" ]] || { log_error "磁盘文件不存在：$cloud_disk"; return 1; }
 
   local mnt="/tmp/pve-ci-$$"
   mkdir -p "$mnt"
-
   if guestmount -a "$cloud_disk" -m /dev/sda1 "$mnt" 2>/dev/null || \
      guestmount -a "$cloud_disk" -m /dev/vda1 "$mnt" 2>/dev/null; then
     sed -i "s/^ssh_pwauth:.*/ssh_pwauth: $SSH_PWAUTH/" "$mnt/etc/cloud/cloud.cfg" 2>/dev/null || true
@@ -256,7 +256,6 @@ config_cloudinit(){
   else
     log_warning "guestmount 失败，跳过 cloud-init 微调"
   fi
-
   rmdir "$mnt" 2>/dev/null || true
 }
 
@@ -278,19 +277,20 @@ create_template(){
   local tmp_img="$TEMP_DIR/${os_name}-cloudimg.qcow2"
   download_image "$url" "$tmp_img" "$os_name" || return 1
   create_vm_base "$vmid" "Template-$os_name" "$cpu" "$mem"
+
   # 1 导入
-  qm importdisk "$vmid" "$img" "$storage" --format qcow2
-  # 2 等落盘
+  qm importdisk "$vmid" "$tmp_img" "$storage" --format qcow2
   until qm config "$vmid" | grep -q "unused0"; do sleep 1; done
-  # 3 挂盘
+
+  # 2 挂盘（**只执行一次**）
   qm set "$vmid" --scsi0 "$storage:$vmid/vm-$vmid-disk-0.qcow2"
-  # 4 扩容（可选）
+  # 保存路径，后面直接传参
+  local cloud_disk="/var/lib/vz/images/$vmid/vm-$vmid-disk-0.qcow2"
+
   qm resize "$vmid" scsi0 "$disk"
-  # 5 cloud-init 驱动器
   qm set "$vmid" --ide2 "$storage:cloudinit"
-  # 6 启动顺序
-  qm set "$vmid" --boot order='scsi0;ide2'
-  config_cloudinit "$vmid" "$user" "$pass" "$bridge" "$sshkey"
+  # 不再二次设置 --boot order=scsi0;xxx
+  config_cloudinit "$vmid" "$user" "$pass" "$bridge" "$sshkey" "$cloud_disk"
   qm template "$vmid"
   log_success "模板创建完成：Template-$os_name (VMID:$vmid)"
 }
@@ -328,17 +328,12 @@ batch_mode(){
     local img="$TEMP_DIR/${name}.qcow2"
     check_vmid "$vmid" || { ((vmid++)); continue; }
     create_vm_base "$vmid" "Template-$name" "$cpu" "$mem"
-    # 1 导入
+    export CUR_VMID="$vmid"
     qm importdisk "$vmid" "$img" "$storage" --format qcow2
-    # 2 等落盘
     until qm config "$vmid" | grep -q "unused0"; do sleep 1; done
-    # 3 挂盘
     qm set "$vmid" --scsi0 "$storage:$vmid/vm-$vmid-disk-0.qcow2"
-    # 4 扩容（可选）
     qm resize "$vmid" scsi0 "$disk"
-    # 5 cloud-init 驱动器
     qm set "$vmid" --ide2 "$storage:cloudinit"
-    # 6 启动顺序
     qm set "$vmid" --boot order='scsi0;ide2'
     config_cloudinit "$vmid" "$user" "$pass" "$bridge"
     qm template "$vmid"
