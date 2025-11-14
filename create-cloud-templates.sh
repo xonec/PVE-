@@ -337,7 +337,7 @@ batch_mode(){
     qm set "$vmid" --scsi0 "$storage:$vmid/vm-$vmid-disk-0.qcow2"
     qm resize "$vmid" scsi0 "$disk"
     qm set "$vmid" --ide2 "$storage:cloudinit"
-    qm set "$vmid" --boot order='scsi0;ide2'
+    qm set "$vmid" --boot order="scsi0;ide2"
     config_cloudinit "$vmid" "$user" "$pass" "$bridge"
     qm template "$vmid"
     log_success "模板创建：Template-$name (VMID:$vmid)"
