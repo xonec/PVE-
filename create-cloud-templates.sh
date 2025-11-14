@@ -30,7 +30,7 @@ readonly DEFAULT_MEMORY="2048"
 readonly DEFAULT_DISK="30G"
 readonly DEFAULT_USER="root"
 readonly DEFAULT_PASSWORD="changeme"
-readonly SSH_PWAUTH="false"
+readonly SSH_PWAUTH="true"
 
 # -------------------- 日志系统 --------------------
 log(){
@@ -267,6 +267,8 @@ config_cloudinit(){
     # 确保 systemd-networkd / NetworkManager 不残留静态 IP
     rm -f "$mnt/etc/systemd/network/"*.network
     rm -f "$mnt/etc/NetworkManager/system-connections/"*
+    sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' "$mnt/etc/ssh/sshd_config"
+
     guestunmount "$mnt"
   else
     log_warning "guestmount 失败，跳过网络微调"
