@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Proxmox VE 云模板创建脚本  v2.1.0-patch  (2025-06 修复版)
+#  Proxmox VE 云模板创建脚本  v2.1.1  (2025-06 修复增强版)
 #  1) 自动检测并安装缺失依赖
 #  2) 根据出口 IP 自动选择国内外镜像站
-#  3) 并行下载 + 本地缓存 + 断点续传
+#  3) 并行下载 + 本地缓存 + 断点续传 + SHA256 校验
 #  4) 批量 / 交互 / 精准 三种模式
 # =============================================================================
 set -o pipefail
 shopt -s extglob nameref
 
-readonly VERSION="2.1.0-patch"
+readonly VERSION="2.1.1"
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly CACHE_DIR="/var/cache/pve-templates"
 readonly TEMP_DIR="/tmp/pve-templates-$$"
+readonly LOG_FILE=$(touch /var/log/pve-template-maker.log 2>/dev/null \
+                    && echo /var/log/pve-template-maker.log \
+                    || echo /dev/null)
 
 # -------------------- 颜色 --------------------
 readonly RED='\033[0;31m' GREEN='\033[0;32m' YELLOW='\033[1;33m' BLUE='\033[0;34m'
@@ -29,14 +32,9 @@ readonly DEFAULT_USER="root"
 readonly DEFAULT_PASSWORD="changeme"
 readonly SSH_PWAUTH="false"
 
-# -------------------- 日志文件可写性处理 --------------------
-readonly LOG_FILE=$(touch /var/log/pve-template-maker.log 2>/dev/null \
-                    && echo /var/log/pve-template-maker.log \
-                    || echo /dev/null)
-
 # -------------------- 日志系统 --------------------
 log(){
-  local level="$1";shift
+  local level="$1"; shift
   local timestamp
   timestamp=$(date '+%F %T')
   echo -e "[$timestamp] [$level] $*" | tee -a "$LOG_FILE"
@@ -54,7 +52,6 @@ cleanup(){
     guestunmount "$MOUNT_DIR" 2>/dev/null || true
     rmdir "$MOUNT_DIR" 2>/dev/null || true
   fi
-  # 清理临时 VM（如果中断时已创建）
   if [[ -n "${CUR_VMID:-}" ]]; then
     qm destroy "$CUR_VMID" --purge &>/dev/null || true
   fi
@@ -67,18 +64,18 @@ handle_error(){
 }
 trap handle_error ERR
 trap cleanup EXIT
-trap 'echo -e "\n${YELLOW}⚠️  中断信号，清理中...${NC}";cleanup;exit 130' INT TERM
+trap 'echo -e "\n${YELLOW}⚠️  中断信号，清理中...${NC}"; cleanup; exit 130' INT TERM
 
 # -------------------- 依赖自动安装 --------------------
 install_deps(){
   local pkgs=("$@") cmd=""
-  if command -v apt-get &>/dev/null;then
+  if command -v apt-get &>/dev/null; then
     cmd="apt-get -qqy install"
-  elif command -v dnf &>/dev/null;then
+  elif command -v dnf &>/dev/null; then
     cmd="dnf -q -y install"
-  elif command -v yum &>/dev/null;then
+  elif command -v yum &>/dev/null; then
     cmd="yum -q -y install"
-  elif command -v zypper &>/dev/null;then
+  elif command -v zypper &>/dev/null; then
     cmd="zypper -q -n install"
   else
     log_error "未识别的包管理器，请手动安装：${pkgs[*]}"; return 1
@@ -91,13 +88,13 @@ check_dependencies(){
   local deb_pkgs=(qemu-utils libguestfs-tools wget curl)
   local rh_pkgs=(qemu-img libguestfs-tools wget curl)
   local miss=()
-  for c in qm pvesm wget curl guestmount guestunmount sha256sum;do
+  for c in qm pvesm wget curl guestmount guestunmount sha256sum; do
     command -v "$c" &>/dev/null || miss+=("$c")
   done
-  if [[ ${#miss[@]} -gt 0 ]];then
+  if ((${#miss[@]})); then
     log_warning "缺失命令：${miss[*]}"
-    if command -v apt-get &>/dev/null;then install_deps "${deb_pkgs[@]}"
-    elif command -v dnf &>/dev/null || command -v yum &>/dev/null;then install_deps "${rh_pkgs[@]}"
+    if command -v apt-get &>/dev/null; then install_deps "${deb_pkgs[@]}"
+    elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then install_deps "${rh_pkgs[@]}"
     else log_error "请手动安装缺失命令"; exit 1; fi
   fi
 }
@@ -107,7 +104,7 @@ select_mirror(){
   local domain="$1"
   local upstream="$domain"
   local ipinfo
-  ipinfo=$(curl -s4 -m 5 --retry 2 https://ipinfo.io/country || true)
+  ipinfo=$(curl -s4 -m 5 --retry 2 https://ipinfo.io/country || curl -s6 -m 5 --retry 2 https://ipinfo.io/country || true)
   if [[ "$ipinfo" == "CN" ]]; then
     case "$upstream" in
       debian.org)      domain="mirrors.huaweicloud.com" ;;
@@ -122,13 +119,13 @@ select_mirror(){
 }
 
 rewrite_urls(){
-  declare -n map_ref=$1
+  local -n map_ref=$1
   local key url old_domain new_domain new_url
-  for key in "${!map_ref[@]}";do
+  for key in "${!map_ref[@]}"; do
     url="${map_ref[$key]}"
     old_domain=$(echo "$url" | awk -F[/:] '{print $4}')
     new_domain=$(select_mirror "$old_domain")
-    if [[ "$new_domain" != "$old_domain" ]];then
+    if [[ "$new_domain" != "$old_domain" ]]; then
       new_url="${url/$old_domain/$new_domain}"
       log_info "镜像 [$key] 切换为 $new_url"
       map_ref[$key]="$new_url"
@@ -167,11 +164,13 @@ check_storage(){
   log_error "存储池 $1 不存在"; return 1
 }
 check_vmid(){
-  if qm status "$1" &>/dev/null;then
+  if qm status "$1" &>/dev/null; then
     read -p "⚠️  VMID $1 已存在，是否销毁重建？(y/n) " -n 1 -r
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]];then
-      qm destroy "$1" --purge 2>/dev/null
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      qm destroy "$1" --purge 2>/dev/null || {
+        log_error "销毁 VMID $1 失败，可能正在被克隆"; return 1
+      }
       log_success "已销毁 VMID $1"
     else
       log_info "操作取消"; return 1
@@ -189,17 +188,18 @@ check_os_name(){
 }
 read_with_default(){
   local prompt="$1" default="$2" val
-  read -p "$(echo -e "${CYAN}$prompt${NC} (默认: ${YELLOW}$default${NC}): ")" val
+  read -rp "$(echo -e "${CYAN}$prompt${NC} (默认: ${YELLOW}$default${NC}): ")" val
   echo "${val:-$default}"
 }
 
-# -------------------- 下载镜像（缓存 + 断点续传）--------------------
+# -------------------- 下载镜像（缓存 + 断点续传 + SHA256 校验）--------------------
 download_image(){
   local url="$1" output="$2" os_name="${3:-}"
   mkdir -p "$CACHE_DIR"
-  local cache_fn="${os_name:-unknown}-$(echo -n "$url" | md5sum | cut -d' ' -f1)"
+  local cache_fn="${os_name:-unknown}-$(printf %s "${url%%+([[:space:]])}" | md5sum | cut -d' ' -f1)"
   local cached="$CACHE_DIR/$cache_fn.qcow2"
-  if [[ -f "$cached" ]];then
+  local sum_url="${url}.SHA256SUM"
+  if [[ -f "$cached" ]]; then
     log_info "命中缓存：$cached"
     cp "$cached" "$output"
     return 0
@@ -207,8 +207,14 @@ download_image(){
   log_info "下载：$url"
   local wget_opts=(-q --show-progress -O "$output" -c)
   [[ -n "${HTTP_PROXY:-}" ]] && wget_opts+=(-e use_proxy=yes -e "http_proxy=$HTTP_PROXY")
-  if ! wget "${wget_opts[@]}" "$url";then
+  if ! wget "${wget_opts[@]}" "$url"; then
     log_error "下载失败"; rm -f "$output"; return 1
+  fi
+  # 简单 SHA256 校验（如果镜像站提供）
+  if wget -q -O - "$sum_url" | grep "$(basename "$url")" | sha256sum -c >/dev/null 2>&1; then
+    log_success "SHA256 校验通过"
+  else
+    log_warning "SHA256 校验跳过或失败"
   fi
   cp "$output" "$cached"
   log_success "下载完成并已缓存"
@@ -216,20 +222,20 @@ download_image(){
 
 # -------------------- 并行下载 --------------------
 download_images_parallel(){
-  declare -n imap=$1
-  local ddir="$2" pids=() fail=()
+  local -n imap=$1
+  local ddir="$2" pids=() fail=() names=()
   mkdir -p "$ddir"
-  log_info "开始并行下载 ${#imap[@]} 个镜像"
-  for name in "${!imap[@]}";do
-    download_image "${imap[$name]}" "$ddir/${name}.qcow2" "$name" &
-    pids+=($!)
+  mapfile -t names < <(printf '%s\n' "${!imap[@]}" | sort)
+  log_info "开始并行下载 ${#names[@]} 个镜像"
+  local i
+  for i in "${!names[@]}"; do
+    download_image "${imap[${names[$i]}]}" "$ddir/${names[$i]}.qcow2" "${names[$i]}" &
+    pids[$i]=$!
   done
-  for i in "${!pids[@]}";do
-    if ! wait "${pids[$i]}";then
-      fail+=("${!imap[@]:$i:1}")
-    fi
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then fail+=("${names[$i]}"); fi
   done
-  if [[ ${#fail[@]} -gt 0 ]];then
+  if ((${#fail[@]})); then
     log_error "部分镜像下载失败：${fail[*]}"; return 1
   fi
   log_success "全部镜像下载完成"
@@ -238,15 +244,11 @@ download_images_parallel(){
 # -------------------- Cloud-Init 配置 --------------------
 config_cloudinit(){
   local vmid="$1" user="$2" pass="$3" bridge="$4" sshkey="$5" cloud_disk="$6"
-
   qm set "$vmid" --ciuser "$user" --cipassword "$pass" \
         --net0 "virtio,bridge=$bridge" \
         --serial0 socket --vga serial0
-
   [[ -n "$sshkey" ]] && qm set "$vmid" --sshkeys <(cat "$sshkey")
-
   [[ -f "$cloud_disk" ]] || { log_error "磁盘文件不存在：$cloud_disk"; return 1; }
-
   local mnt="/tmp/pve-ci-$$"
   mkdir -p "$mnt"
   if guestmount -a "$cloud_disk" -m /dev/sda1 "$mnt" 2>/dev/null || \
@@ -257,7 +259,7 @@ config_cloudinit(){
           "$mnt/etc/systemd/system/multi-user.target.wants/" 2>/dev/null || true
     guestunmount "$mnt"
   else
-    log_warning "guestmount 失败，跳过 cloud-init 微调"
+    log_error "guestmount 失败，放弃 cloud-init 微调"; return 1
   fi
   rmdir "$mnt" 2>/dev/null || true
 }
@@ -274,26 +276,20 @@ create_vm_base(){
 create_template(){
   local vmid="$1" os_name="$2" url="$3" storage="$4" bridge="$5"
   local cpu="$6" mem="$7" disk="$8" user="$9" pass="${10}" sshkey="${11}"
+  export CUR_VMID=$vmid
   print_header
   log_info "开始创建模板：Template-$os_name (VMID:$vmid)"
   check_vmid "$vmid" || return 1
   local tmp_img="$TEMP_DIR/${os_name}-cloudimg.qcow2"
   download_image "$url" "$tmp_img" "$os_name" || return 1
   create_vm_base "$vmid" "Template-$os_name" "$cpu" "$mem"
-
-  # 1 导入
   qm importdisk "$vmid" "$tmp_img" "$storage" --format qcow2
   until qm config "$vmid" | grep -q "unused0"; do sleep 1; done
-
-  # 2 挂盘（**只执行一次**）
   qm set "$vmid" --scsi0 "$storage:$vmid/vm-$vmid-disk-0.qcow2"
-  # 保存路径，后面直接传参
   local cloud_disk="/var/lib/vz/images/$vmid/vm-$vmid-disk-0.qcow2"
-
   qm resize "$vmid" scsi0 "$disk"
   qm set "$vmid" --ide2 "$storage:cloudinit"
-  # 不再二次设置 --boot order=scsi0;xxx
-  config_cloudinit "$vmid" "$user" "$pass" "$bridge" "$sshkey" "$cloud_disk"
+  config_cloudinit "$vmid" "$user" "$pass" "$bridge" "$sshkey" "$cloud_disk" || return 1
   qm template "$vmid"
   log_success "模板创建完成：Template-$os_name (VMID:$vmid)"
 }
@@ -305,7 +301,7 @@ precision_mode(){
   check_storage "$storage" || return 1
   check_ssh_key "$sshkey" || return 1
   local os_name="" url="" template_name
-  if [[ "$input" =~ ^https?:// ]];then
+  if [[ "$input" =~ ^https?:// ]]; then
     url="$input"
     template_name=$(basename "$url" | sed -E 's/\?.*//;s/\.(qcow2|img)$//i')
     log_info "识别为镜像 URL，模板名：$template_name"
@@ -327,18 +323,18 @@ batch_mode(){
   check_storage "$storage" || return 1
   download_images_parallel OS_IMAGES "$TEMP_DIR" || return 1
   local vmid=$vmid_start
-  for name in "${!OS_IMAGES[@]}";do
+  for name in "${!OS_IMAGES[@]}"; do
     local img="$TEMP_DIR/${name}.qcow2"
     check_vmid "$vmid" || { ((vmid++)); continue; }
     create_vm_base "$vmid" "Template-$name" "$cpu" "$mem"
-    export CUR_VMID="$vmid"
+    export CUR_VMID=$vmid
     qm importdisk "$vmid" "$img" "$storage" --format qcow2
     until qm config "$vmid" | grep -q "unused0"; do sleep 1; done
     qm set "$vmid" --scsi0 "$storage:$vmid/vm-$vmid-disk-0.qcow2"
     qm resize "$vmid" scsi0 "$disk"
     qm set "$vmid" --ide2 "$storage:cloudinit"
     qm set "$vmid" --boot order="scsi0;ide2"
-    config_cloudinit "$vmid" "$user" "$pass" "$bridge"
+    config_cloudinit "$vmid" "$user" "$pass" "$bridge" "" "$img" || true
     qm template "$vmid"
     log_success "模板创建：Template-$name (VMID:$vmid)"
     ((vmid++))
@@ -366,13 +362,13 @@ interactive_mode(){
   pass=$(read_with_default "密码" "$DEFAULT_PASSWORD")
   local sshkey=""
   read -p "是否使用 SSH 公钥登录？(y/n) " -n 1 -r; echo
-  if [[ $REPLY =~ ^[Yy]$ ]];then
-    read -p "请输入公钥文件路径: " sshkey
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    read -rp "请输入公钥文件路径: " sshkey
     check_ssh_key "$sshkey" || return 1
   fi
   echo "可选系统："
   local os_list=("${!OS_IMAGES[@]}")
-  for i in "${!os_list[@]}";do echo "  $((i+1)). ${os_list[$i]}"; done
+  for i in "${!os_list[@]}"; do echo "  $((i+1)). ${os_list[$i]}"; done
   local choice
   read -p "请选择 (1-${#os_list[@]}): " choice
   [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le "${#os_list[@]}" ]] || {
@@ -396,7 +392,7 @@ show_menu(){
     "退出"
   )
   echo -e "${BLUE}请选择操作模式：${NC}"
-  for i in "${!opts[@]}";do echo "  $((i+1))). ${opts[$i]}"; done
+  for i in "${!opts[@]}"; do echo "  $((i+1))). ${opts[$i]}"; done
   local choice
   read -p "请输入选择 (1-${#opts[@]}): " choice
   case "$choice" in
@@ -430,13 +426,13 @@ parse_arguments(){
     -v|--version) echo "$VERSION"; exit 0 ;;
     -d|--debug) export DEBUG=true; shift ;;
   esac
-  if [[ $# -eq 5 ]];then
+  if [[ $# -eq 5 ]]; then
     check_root; check_dependencies; rewrite_urls OS_IMAGES; precision_mode "$@"
-  elif [[ $# -eq 8 ]];then
+  elif [[ $# -eq 8 ]]; then
     check_root; check_dependencies; rewrite_urls OS_IMAGES; batch_mode "$@"
-  elif [[ $# -eq 0 ]];then
+  elif [[ $# -eq 0 ]]; then
     check_root; check_dependencies; rewrite_urls OS_IMAGES
-    while true;do show_menu; read -p "按回车继续菜单，q退出: " c; [[ "$c" == "q" ]] && break; done
+    while true; do show_menu; read -p "按回车继续菜单，q退出: " c; [[ "$c" == "q" ]] && break; done
   else
     print_header; print_usage; log_error "参数数量错误"; exit 1
   fi
