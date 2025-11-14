@@ -272,6 +272,8 @@ create_template(){
   qm importdisk "$vmid" "$tmp_img" "$storage" --format qcow2
   qm set "$vmid" --scsi0 "$storage:vm-$vmid-disk-0"
   qm resize "$vmid" scsi0 "$disk"
+  qm set "$vmid" --ide2 "$storage:cloudinit"
+  qm set "$vmid" --boot order='scsi0;ide2'    
   config_cloudinit "$vmid" "$user" "$pass" "$bridge" "$sshkey"
   qm template "$vmid"
   log_success "模板创建完成：Template-$os_name (VMID:$vmid)"
@@ -313,6 +315,8 @@ batch_mode(){
     qm importdisk "$vmid" "$img" "$storage" --format qcow2
     qm set "$vmid" --scsi0 "$storage:vm-$vmid-disk-0"
     qm resize "$vmid" scsi0 "$disk"
+    qm set "$vmid" --ide2 "$storage:cloudinit"
+    qm set "$vmid" --boot order='scsi0;ide2' 
     config_cloudinit "$vmid" "$user" "$pass" "$bridge"
     qm template "$vmid"
     log_success "模板创建：Template-$name (VMID:$vmid)"
