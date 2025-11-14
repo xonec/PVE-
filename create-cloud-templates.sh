@@ -96,15 +96,21 @@ check_dependencies(){
 
 # -------------------- 镜像地址智能替换 --------------------
 select_mirror(){
-  local upstream="$1" domain="$upstream"
+  local domain="$1"          # 第一行先读参数
+  local upstream="$domain"   # 备份原域名
+  # 判断国内外
   local ipinfo
   ipinfo=$(curl -s4 --max-time 2 https://ipinfo.io/country || true)
-  [[ "$ipinfo" == "CN" ]] && case "$upstream" in
-    debian.org) domain="mirrors.huaweicloud.com" ;;
-    ubuntu.com) domain="mirrors.tuna.tsinghua.edu.cn" ;;
-    centos.org|rockylinux.org|fedoraproject.org) domain="mirrors.aliyun.com" ;;
-    almalinux.org) domain="mirrors.neusoft.edu.cn" ;;
-  esac
+  if [[ "$ipinfo" == "CN" ]]; then
+    case "$upstream" in
+      debian.org)      domain="mirrors.huaweicloud.com" ;;
+      ubuntu.com)      domain="mirrors.tuna.tsinghua.edu.cn" ;;
+      centos.org)      domain="mirrors.aliyun.com" ;;
+      almalinux.org)   domain="mirrors.neusoft.edu.cn" ;;
+      rockylinux.org)  domain="mirrors.aliyun.com" ;;
+      fedoraproject.org) domain="mirrors.aliyun.com" ;;
+    esac
+  fi
   echo "$domain"
 }
 
