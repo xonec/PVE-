@@ -269,11 +269,18 @@ create_template(){
   local tmp_img="$TEMP_DIR/${os_name}-cloudimg.qcow2"
   download_image "$url" "$tmp_img" "$os_name" || return 1
   create_vm_base "$vmid" "Template-$os_name" "$cpu" "$mem"
-  qm importdisk "$vmid" "$tmp_img" "$storage" --format qcow2
-  qm set "$vmid" --scsi0 "$storage:vm-$vmid-disk-0"
+  # 1 导入
+  qm importdisk "$vmid" "$img" "$storage" --format qcow2
+  # 2 等落盘
+  until qm config "$vmid" | grep -q "unused0"; do sleep 1; done
+  # 3 挂盘
+  qm set "$vmid" --scsi0 "$storage:$vmid/vm-$vmid-disk-0.qcow2"
+  # 4 扩容（可选）
   qm resize "$vmid" scsi0 "$disk"
+  # 5 cloud-init 驱动器
   qm set "$vmid" --ide2 "$storage:cloudinit"
-  qm set "$vmid" --boot order='scsi0;ide2'    
+  # 6 启动顺序
+  qm set "$vmid" --boot order='scsi0;ide2'
   config_cloudinit "$vmid" "$user" "$pass" "$bridge" "$sshkey"
   qm template "$vmid"
   log_success "模板创建完成：Template-$os_name (VMID:$vmid)"
@@ -312,11 +319,18 @@ batch_mode(){
     local img="$TEMP_DIR/${name}.qcow2"
     check_vmid "$vmid" || { ((vmid++)); continue; }
     create_vm_base "$vmid" "Template-$name" "$cpu" "$mem"
+    # 1 导入
     qm importdisk "$vmid" "$img" "$storage" --format qcow2
-    qm set "$vmid" --scsi0 "$storage:vm-$vmid-disk-0"
+    # 2 等落盘
+    until qm config "$vmid" | grep -q "unused0"; do sleep 1; done
+    # 3 挂盘
+    qm set "$vmid" --scsi0 "$storage:$vmid/vm-$vmid-disk-0.qcow2"
+    # 4 扩容（可选）
     qm resize "$vmid" scsi0 "$disk"
+    # 5 cloud-init 驱动器
     qm set "$vmid" --ide2 "$storage:cloudinit"
-    qm set "$vmid" --boot order='scsi0;ide2' 
+    # 6 启动顺序
+    qm set "$vmid" --boot order='scsi0;ide2'
     config_cloudinit "$vmid" "$user" "$pass" "$bridge"
     qm template "$vmid"
     log_success "模板创建：Template-$name (VMID:$vmid)"
