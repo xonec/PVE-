@@ -121,12 +121,44 @@ download_image(){
 
   local cached="$CACHE_DIR/$file"
 
-  if [ -s "$cached" ]; then
-    log_info "命中缓存镜像: $cached"
+  local url="$MIRROR_BASE$rel_path"
+
+  # 先尝试获取远程文件大小（Content-Length）
+  local remote_size
+  remote_size=$(curl -sI "$url" | awk '/Content-Length/ {gsub("\\r","",$2); print $2}' || true)
+
+  if [ -n "$remote_size" ]; then
+    log_info "远程镜像大小: $remote_size 字节 ($url)"
+  else
+    log_warn "无法获取远程镜像大小，将直接采用下载逻辑: $url"
+  fi
+
+  # 如本地已有文件且能获取远程大小，则比较大小
+  if [ -s "$cached" ] && [ -n "$remote_size" ]; then
+    local local_size
+    local_size=$(stat -c '%s' "$cached" 2>/dev/null || stat -f '%z' "$cached" 2>/dev/null || echo "")
+
+    if [ -n "$local_size" ]; then
+      log_info "本地缓存镜像大小: $local_size 字节 ($cached)"
+
+      if [ "$local_size" = "$remote_size" ]; then
+        log_info "本地与远程大小一致，跳过重新下载。"
+        return 0
+      else
+        log_warn "本地与远程大小不一致，删除本地缓存并重新下载。"
+        rm -f "$cached" 2>/dev/null || true
+      fi
+    else
+      log_warn "无法获取本地镜像大小，将重新下载: $cached"
+      rm -f "$cached" 2>/dev/null || true
+    fi
+  elif [ -s "$cached" ]; then
+    # 有本地文件但拿不到远程大小，只提示命中缓存
+    log_info "命中缓存镜像（未校验远程大小）: $cached"
     return 0
   fi
 
-  local url="$MIRROR_BASE$rel_path"
+  # 若走到这里，要么本地无文件，要么已被删除，需要下载
   log_info "下载镜像: $url"
   if ! wget -c -O "$cached" "$url"; then
     log_err "下载失败: $url"; exit 1;
