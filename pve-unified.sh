@@ -125,7 +125,7 @@ download_image(){
 
   # 先尝试获取远程文件大小（Content-Length）
   local remote_size
-  remote_size=$(curl -sI "$url" | awk 'tolower($1)=="content-length:" {gsub("\r",""); print $2}' || true)
+  remote_size=$(curl -sI "$url" | awk 'tolower($1) ~ /^content-length:/ {gsub("\r",""); print $2}' || true)
 
   if [ -n "$remote_size" ]; then
     log_info "远程镜像大小: $remote_size 字节 ($url)"
