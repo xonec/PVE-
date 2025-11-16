@@ -127,8 +127,15 @@ download_image(){
   if ! wget -c -O "$TEMP_DIR/$file" "$url"; then
     log_err "下载失败: $url"; exit 1;
   fi
-  log_ok "镜像已下载: $TEMP_DIR/$file，写入缓存"
-  cp "$TEMP_DIR/$file" "$cached" || true
+  log_ok "镜像已下载: $TEMP_DIR/$file，准备写入缓存"
+  
+  # 复制到缓存目录，成功后删除临时文件
+  if cp "$TEMP_DIR/$file" "$cached"; then
+    log_info "缓存写入成功，删除临时文件: $TEMP_DIR"
+    rm -f "$TEMP_DIR"  # 仅删除当前临时文件（避免误删目录中其他文件）
+  else
+    log_warn "缓存写入失败，临时文件保留: $TEMP_DIR/$file"
+  fi
 }
 
 create_template_single(){
