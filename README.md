@@ -221,10 +221,10 @@ chmod +x pve-unified.sh
 
 在 Proxmox 节点上：
 
-```bash
-cd /root/PVE-template-maker   # 按实际路径调整
-chmod +x pve-unified.sh
-./pve-unified.sh
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/xonec/PVE-template-maker/refs/heads/main/pve-unified.sh)
+
+bash <(wget -qO- https://raw.githubusercontent.com/xonec/PVE-template-maker/refs/heads/main/pve-unified.sh)
 ```
 
 然后根据菜单提示：
