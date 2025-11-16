@@ -280,7 +280,7 @@ create_vm_single(){
 
   download_image "$SUBDIR/$FILE"
 
-  log_info "创建虚拟机 $NAME (VMID: $VMID)（同模板配置）"
+  log_info "创建虚拟机 $NAME (VMID: $VMID)"
   qm create "$VMID" \
     --name "$NAME" \
     --cpu host \
