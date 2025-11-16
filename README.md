@@ -10,6 +10,20 @@
 
 ---
 
+## 快速开始
+
+在 Proxmox 节点上：
+
+```
+bash <(curl -fsSL https://raw.githubusercontent.com/xonec/PVE-template-maker/refs/heads/main/pve-unified.sh)
+```
+
+```
+bash <(wget -qO- https://raw.githubusercontent.com/xonec/PVE-template-maker/refs/heads/main/pve-unified.sh)
+```
+
+---
+
 ## 1. `pve-unified.sh` 功能概览
 
 - 从预置镜像源下载 KVM 云镜像（支持 Debian / Ubuntu / CentOS 等）。
@@ -211,15 +225,7 @@ chmod +x pve-unified.sh
 
 ---
 
-## 9. 快速开始
 
-在 Proxmox 节点上：
-
-```
-bash <(curl -fsSL https://raw.githubusercontent.com/xonec/PVE-template-maker/refs/heads/main/pve-unified.sh)
-
-bash <(wget -qO- https://raw.githubusercontent.com/xonec/PVE-template-maker/refs/heads/main/pve-unified.sh)
-```
 
 然后根据菜单提示：
 
