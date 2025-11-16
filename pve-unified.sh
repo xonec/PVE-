@@ -201,8 +201,22 @@ wait_and_set_ip_tag(){
 
   log_info "等待虚拟机 $vmid 获取 IP (最多 ${timeout}s)"
   while [ "$elapsed" -lt "$timeout" ]; do
-    IP=$(qm guest cmd "$vmid" network-get-interfaces 2>/dev/null | \
-         grep -oP '"ip-address" : "\K10\.[0-9]+\.[0-9]+\.[0-9]+')
+    # 通过 guest agent 获取所有接口信息，解析出第一个非 127.* 的 IPv4 地址
+    IP=$(qm guest cmd "$vmid" network-get-interfaces 2>/dev/null | awk '
+      /"ip-address"/ {
+        gsub(/[",]/, "");
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^ip-address$/ && (i+1) <= NF && $(i+1) == ":") {
+            ip = $(i+2);
+            if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && ip !~ /^127\./) {
+              print ip;
+              exit;
+            }
+          }
+        }
+      }
+    ')
+
     if [ -n "$IP" ]; then
       log_ok "获取到 IP: $IP，写入 tags"
       qm set "$vmid" --tags "$IP"
@@ -288,8 +302,20 @@ update_ip_tags(){
   QMIDS=$(qm list | awk 'NR>1 {print $1}')
   for VMID in $QMIDS; do
     echo "处理 QEMU 虚拟机 $VMID ..."
-    IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null | \
-         grep -oP '"ip-address" : "\K10\.[0-9]+\.[0-9]+\.[0-9]+')
+    IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null | awk '
+      /"ip-address"/ {
+        gsub(/[",]/, "");
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^ip-address$/ && (i+1) <= NF && $(i+1) == ":") {
+            ip = $(i+2);
+            if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && ip !~ /^127\./) {
+              print ip;
+              exit;
+            }
+          }
+        }
+      }
+    ')
     if [ -z "$IP" ]; then
       echo "  未获取到IP (可能未安装 qemu-guest-agent 或虚拟机未运行)"; continue;
     fi
@@ -302,7 +328,19 @@ update_ip_tags(){
   CTIDS=$(pct list | awk 'NR>1 {print $1}')
   for CTID in $CTIDS; do
     echo "处理 LXC 容器 $CTID ..."
-    IP=$(pct exec "$CTID" -- ip -4 addr show | grep -oP '(?<=inet\\s)10\.[0-9]+\.[0-9]+\.[0-9]+')
+    IP=$(pct exec "$CTID" -- ip -4 addr show | awk '
+      /inet / {
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\//) {
+            sub(/\/.*/, "", $i);
+            if ($i !~ /^127\./) {
+              print $i;
+              exit;
+            }
+          }
+        }
+      }
+    ')
     if [ -z "$IP" ]; then
       echo "  未获取到IP (容器未运行或网络未配置)"; continue;
     fi
