@@ -113,28 +113,53 @@ download_image(){
   local file
   file="${rel_path##*/}"       # 例如: debian13.qcow2
 
+  # 检查文件名是否有效（避免空值导致路径错误）
+  if [ -z "$file" ]; then
+    log_err "无效的相对路径: $rel_path（无法提取文件名）"
+    exit 1
+  fi
+
   mkdir -p "$TEMP_DIR" "$CACHE_DIR"
 
   local cached="$CACHE_DIR/$file"
+  local temp_file="$TEMP_DIR/$file"  # 显式定义临时文件路径
+  local temp_dir="$TEMP_DIR"         # 显式定义临时目录路径
+
   if [ -s "$cached" ]; then
     log_info "命中缓存镜像: $cached"
-    cp "$cached" "$TEMP_DIR/$file"
+    cp "$cached" "$temp_file"
     return 0
   fi
 
   local url="$MIRROR_BASE$rel_path"
   log_info "下载镜像: $url"
-  if ! wget -c -O "$TEMP_DIR/$file" "$url"; then
+  if ! wget -c -O "$temp_file" "$url"; then
     log_err "下载失败: $url"; exit 1;
   fi
-  log_ok "镜像已下载: $TEMP_DIR/$file，准备写入缓存"
+  log_ok "镜像已下载: $temp_file，准备写入缓存"
   
-  # 复制到缓存目录，成功后删除临时文件
-  if cp "$TEMP_DIR/$file" "$cached"; then
-    log_info "缓存写入成功，删除临时文件: $TEMP_DIR"
-    rm -f "$TEMP_DIR"  # 仅删除当前临时文件（避免误删目录中其他文件）
+  # 复制到缓存目录，成功后删除临时文件和目录
+  if cp "$temp_file" "$cached"; then
+    # 1. 先删除临时文件
+    if [ -f "$temp_file" ]; then
+      log_info "缓存写入成功，删除临时文件: $temp_file"
+      rm -f "$temp_file"
+      
+      # 2. 再尝试删除临时目录（仅当目录为空时）
+      if [ -d "$temp_dir" ]; then  # 确认是目录
+        if rmdir "$temp_dir" 2>/dev/null; then  # rmdir 仅删除空目录，失败时屏蔽错误
+          log_info "临时目录已删除: $temp_dir"
+        else
+          log_warn "临时目录非空，未删除: $temp_dir（可能存在其他文件）"
+        fi
+      else
+        log_warn "临时目录不存在，跳过删除: $temp_dir"
+      fi
+    else
+      log_warn "临时路径不是文件，跳过删除: $temp_file（可能是目录）"
+    fi
   else
-    log_warn "缓存写入失败，临时文件保留: $TEMP_DIR/$file"
+    log_warn "缓存写入失败，临时文件和目录保留: $temp_file, $temp_dir"
   fi
 }
 
