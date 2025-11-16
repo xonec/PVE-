@@ -12,7 +12,7 @@
 set -o pipefail
 
 MIRROR_BASE="https://cdn.spiritlhl.net/github.com/oneclickvirt/pve_kvm_images/releases/download/"
-TEMP_DIR="/tmp/pve-unified-$$"
+# 统一镜像存放目录（缓存与临时使用同一目录）
 CACHE_DIR="/var/cache/pve-unified-images"
 
 NOTES_TEXT=$'#  镜像说明 (请务必阅读)\n\n- 已预安装：`wget`、`curl`、`openssh-server`、`sshpass`、`sudo`、`cron(cronie)`、`qemu-guest-agent`\n- 已安装并启用 **cloud-init**，开启 SSH 登录，预设 SSH 监听 **IPv4 / IPv6 的 22 端口**，允许密码登录\n- 所有镜像均允许 **root 用户** 通过 SSH 登录\n\n**默认账户信息：**\n\n- 用户名：`root`\n- 密码：`oneclickvirt`\n\n> ⚠️ 安全提示：如果在生产或公网环境使用，请务必在首次登录后立刻修改 root 密码，否则存在被暴力破解/入侵的高风险。'
@@ -29,9 +29,7 @@ log_ok(){   echo -e "${GREEN}[OK]${NC}   $*"; }
 log_warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_err(){  echo -e "${RED}[ERR]${NC}  $*" >&2; }
 
-cleanup(){
-  [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
-}
+cleanup(){ :; }
 trap cleanup EXIT
 
 check_root(){
@@ -119,48 +117,21 @@ download_image(){
     exit 1
   fi
 
-  mkdir -p "$TEMP_DIR" "$CACHE_DIR"
+  mkdir -p "$CACHE_DIR"
 
   local cached="$CACHE_DIR/$file"
-  local temp_file="$TEMP_DIR/$file"  # 显式定义临时文件路径
-  local temp_dir="$TEMP_DIR"         # 显式定义临时目录路径
 
   if [ -s "$cached" ]; then
     log_info "命中缓存镜像: $cached"
-    cp "$cached" "$temp_file"
     return 0
   fi
 
   local url="$MIRROR_BASE$rel_path"
   log_info "下载镜像: $url"
-  if ! wget -c -O "$temp_file" "$url"; then
+  if ! wget -c -O "$cached" "$url"; then
     log_err "下载失败: $url"; exit 1;
   fi
-  log_ok "镜像已下载: $temp_file，准备写入缓存"
-  
-  # 复制到缓存目录，成功后删除临时文件和目录
-  if cp "$temp_file" "$cached"; then
-    # 1. 先删除临时文件
-    if [ -f "$temp_file" ]; then
-      log_info "缓存写入成功，删除临时文件: $temp_file"
-      rm -f "$temp_file"
-      
-      # 2. 再尝试删除临时目录（仅当目录为空时）
-      if [ -d "$temp_dir" ]; then  # 确认是目录
-        if rmdir "$temp_dir" 2>/dev/null; then  # rmdir 仅删除空目录，失败时屏蔽错误
-          log_info "临时目录已删除: $temp_dir"
-        else
-          log_warn "临时目录非空，未删除: $temp_dir（可能存在其他文件）"
-        fi
-      else
-        log_warn "临时目录不存在，跳过删除: $temp_dir"
-      fi
-    else
-      log_warn "临时路径不是文件，跳过删除: $temp_file（可能是目录）"
-    fi
-  else
-    log_warn "缓存写入失败，临时文件和目录保留: $temp_file, $temp_dir"
-  fi
+  log_ok "镜像已下载并缓存: $cached"
 }
 
 create_template_single(){
@@ -193,7 +164,7 @@ create_template_single(){
 
 
   log_info "导入磁盘到存储 $STORAGE"
-  qm importdisk "$VMID" "$TEMP_DIR/$FILE" "$STORAGE" --format qcow2 || {
+  qm importdisk "$VMID" "$CACHE_DIR/$FILE" "$STORAGE" --format qcow2 || {
     log_err "导入磁盘失败"; exit 1;
   }
 
@@ -291,7 +262,7 @@ create_vm_single(){
 
 
   log_info "导入磁盘到存储 $STORAGE"
-  qm importdisk "$VMID" "$TEMP_DIR/$FILE" "$STORAGE" --format qcow2 || {
+  qm importdisk "$VMID" "$CACHE_DIR/$FILE" "$STORAGE" --format qcow2 || {
     log_err "导入磁盘失败"; exit 1;
   }
 
@@ -387,13 +358,19 @@ update_ip_tags(){
 # -------------------- 主菜单 --------------------
 
 clear_cache(){
-  echo "即将删除缓存目录 $CACHE_DIR 下的所有镜像文件..."
+  echo "即将删除缓存目录 $CACHE_DIR 及其所有子目录..."
+
+  # 若缓存目录存在，则递归删除
   if [ -d "$CACHE_DIR" ]; then
-    rm -f "$CACHE_DIR"/* 2>/dev/null || true
-    echo "缓存已清理。"
+    rm -rf "$CACHE_DIR" 2>/dev/null || true
+    echo "缓存目录已删除。"
   else
-    echo "缓存目录不存在，无需清理。"
+    echo "缓存目录不存在，无需删除旧目录。"
   fi
+
+  # 自动重建干净的缓存目录
+  mkdir -p "$CACHE_DIR"
+  echo "已重新创建空的缓存目录: $CACHE_DIR"
 }
 
 show_main_menu(){
@@ -407,7 +384,6 @@ show_main_menu(){
 }
 
 main(){
-  mkdir -p "$TEMP_DIR"
   while true; do
     show_main_menu
     read -rp "请选择操作 (1-5): " opt
