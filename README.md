@@ -233,5 +233,3 @@ chmod +x pve-unified.sh
 - 选择 2：直接创建并启动虚拟机，自动写入 IP 到 tags。
 - 选择 3：为已有 VM/LXC 补全 IP tags。
 - 选择 4：清理缓存镜像。
-
-如需继续使用旧脚本（`create-cloud-templates.sh`、`pvez.sh`、`templates.sh`），可以参照脚本内部注释，它们保持原有行为，互不影响。
