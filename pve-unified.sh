@@ -253,8 +253,20 @@ wait_and_set_ip_tag(){
     if [ -n "$IP" ]; then
       local ip_tag
       ip_tag="ip-$IP=blue"
-      log_ok "获取到 IP: $IP，写入 tags: $ip_tag"
-      sudo qm set "$vmid" --tags "$ip_tag"
+      # 读取现有 tags，移除旧的 ip-* 部分后再追加新的 IP 标签
+      local old_tags new_tags
+      old_tags=$(sudo qm config "$vmid" | awk -F': ' '/^tags: /{print $2}')
+      if [ -n "$old_tags" ]; then
+        # 用逗号分割，过滤掉以 ip- 开头的标签
+        new_tags=$(echo "$old_tags" | tr ',' '\n' | awk 'BEGIN{first=1}{if($0 !~ /^ip-/){if(!first){printf","};printf"%s",$0;first=0}}')
+      fi
+      if [ -n "$new_tags" ]; then
+        new_tags="$new_tags,$ip_tag"
+      else
+        new_tags="$ip_tag"
+      fi
+      log_ok "获取到 IP: $IP，更新 tags: $new_tags"
+      sudo qm set "$vmid" --tags "$new_tags"
       return 0
     fi
     sleep "$interval"
@@ -355,8 +367,19 @@ update_ip_tags(){
       echo "  未获取到IP (可能未安装 qemu-guest-agent 或虚拟机未运行)"; continue;
     fi
     ip_tag="ip-$IP=blue"
-    echo "  获取到IP: $IP，写入标签: $ip_tag"
-    sudo qm set "$VMID" --tags "$ip_tag"
+    # 更新虚拟机 tags 中的 IP 标签
+    old_tags=$(sudo qm config "$VMID" | awk -F': ' '/^tags: /{print $2}')
+    new_tags=""
+    if [ -n "$old_tags" ]; then
+      new_tags=$(echo "$old_tags" | tr ',' '\n' | awk 'BEGIN{first=1}{if($0 !~ /^ip-/){if(!first){printf","};printf"%s",$0;first=0}}')
+    fi
+    if [ -n "$new_tags" ]; then
+      new_tags="$new_tags,$ip_tag"
+    else
+      new_tags="$ip_tag"
+    fi
+    echo "  获取到IP: $IP，更新标签: $new_tags"
+    sudo qm set "$VMID" --tags "$new_tags"
     echo "  已将IP写入虚拟机 tags"
   done
 
@@ -381,8 +404,19 @@ update_ip_tags(){
       echo "  未获取到IP (容器未运行或网络未配置)"; continue;
     fi
     ip_tag="ip-$IP=blue"
-    echo "  获取到IP: $IP，写入标签: $ip_tag"
-    sudo pct set "$CTID" --tags "$ip_tag"
+    # 更新容器 tags 中的 IP 标签
+    old_tags=$(sudo pct config "$CTID" | awk -F': ' '/^tags: /{print $2}')
+    new_tags=""
+    if [ -n "$old_tags" ]; then
+      new_tags=$(echo "$old_tags" | tr ',' '\n' | awk 'BEGIN{first=1}{if($0 !~ /^ip-/){if(!first){printf","};printf"%s",$0;first=0}}')
+    fi
+    if [ -n "$new_tags" ]; then
+      new_tags="$new_tags,$ip_tag"
+    else
+      new_tags="$ip_tag"
+    fi
+    echo "  获取到IP: $IP，更新标签: $new_tags"
+    sudo pct set "$CTID" --tags "$new_tags"
     echo "  已将IP写入容器 tags 标签"
   done
 
