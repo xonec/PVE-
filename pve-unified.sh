@@ -33,9 +33,7 @@ cleanup(){ :; }
 trap cleanup EXIT
 
 check_root(){
-  if [ "$(id -u)" -ne 0 ]; then
-    log_err "请使用 root 运行此脚本"; exit 1;
-  fi
+  : # 允许非 root 运行，由 sudo 提权具体命令
 }
 
 check_cmd(){
@@ -92,11 +90,11 @@ prompt_vm_params(){
 
 maybe_destroy_vm(){
   local id="$1"
-  if qm status "$id" >/dev/null 2>&1; then
+  if sudo qm status "$id" >/dev/null 2>&1; then
     read -rp "检测到 VMID $id 已存在，是否销毁? (y/N): " ans
     if [[ "$ans" =~ ^[Yy]$ ]]; then
-      qm stop "$id" 2>/dev/null || true
-      qm destroy "$id" --destroy-unreferenced-disks 1 --purge 1 || {
+      sudo qm stop "$id" 2>/dev/null || true
+      sudo qm destroy "$id" --destroy-unreferenced-disks 1 --purge 1 || {
         log_err "销毁 VMID $id 失败"; exit 1;
       }
       log_ok "已销毁 VMID $id"
@@ -168,7 +166,7 @@ download_image(){
 
 create_template_single(){
   check_root
-  check_cmd qm wget pct ip
+  check_cmd sudo qm wget pct ip
 
   show_distro_menu
   read -rp "请选择要创建的发行版 (1-10): " choice
@@ -183,7 +181,7 @@ create_template_single(){
   download_image "$SUBDIR/$FILE"
 
   log_info "创建云模板 VM $NAME (VMID: $VMID)"
-  qm create "$VMID" \
+  sudo qm create "$VMID" \
     --name "$NAME" \
     --cpu host \
     --cores 2 \
@@ -196,32 +194,32 @@ create_template_single(){
 
 
   log_info "导入磁盘到存储 $STORAGE"
-  qm importdisk "$VMID" "$CACHE_DIR/$FILE" "$STORAGE" --format qcow2 || {
+  sudo qm importdisk "$VMID" "$CACHE_DIR/$FILE" "$STORAGE" --format qcow2 || {
     log_err "导入磁盘失败"; exit 1;
   }
 
   log_info "配置 SCSI 磁盘 (20G) 和 CloudInit 双栈 DHCP"
-  qm set "$VMID" --scsi0 "$STORAGE:$VMID/vm-$VMID-disk-0.qcow2" || {
+  sudo qm set "$VMID" --scsi0 "$STORAGE:$VMID/vm-$VMID-disk-0.qcow2" || {
     log_err "挂载 scsi0 失败"; exit 1;
   }
-  qm resize "$VMID" scsi0 20G || {
+  sudo qm resize "$VMID" scsi0 20G || {
     log_err "调整磁盘大小失败"; exit 1;
   }
 
   # CloudInit: 挂载驱动器并设置 IPv4/IPv6 均为 DHCP
-  qm set "$VMID" --ide2 "$STORAGE:cloudinit" || {
+  sudo qm set "$VMID" --ide2 "$STORAGE:cloudinit" || {
     log_err "配置 cloudinit 失败"; exit 1;
   }
-  qm set "$VMID" --ipconfig0 "ip=dhcp,ip6=dhcp" || {
+  sudo qm set "$VMID" --ipconfig0 "ip=dhcp,ip6=dhcp" || {
     log_err "配置 IP 为双栈 DHCP 失败"; exit 1;
   }
 
-  qm set "$VMID" --boot c --bootdisk scsi0
-  qm set "$VMID" --serial0 socket --vga serial0
-  qm set "$VMID" --description "$NOTES_TEXT"
+  sudo qm set "$VMID" --boot c --bootdisk scsi0
+  sudo qm set "$VMID" --serial0 socket --vga serial0
+  sudo qm set "$VMID" --description "$NOTES_TEXT"
 
   log_info "转换为模板 (不启动 VM、不写入 IP)"
-  qm template "$VMID" || { log_err "转换模板失败"; exit 1; }
+  sudo qm template "$VMID" || { log_err "转换模板失败"; exit 1; }
 
   log_ok "云模板 $NAME (VMID: $VMID) 创建完成"
 }
@@ -237,7 +235,7 @@ wait_and_set_ip_tag(){
   log_info "等待虚拟机 $vmid 获取 IP (最多 ${timeout}s)"
   while [ "$elapsed" -lt "$timeout" ]; do
     # 通过 guest agent 获取所有接口信息，解析出第一个非 127.* 的 IPv4 地址
-    IP=$(qm guest cmd "$vmid" network-get-interfaces 2>/dev/null | awk '
+    IP=$(sudo qm guest cmd "$vmid" network-get-interfaces 2>/dev/null | awk '
       /"ip-address"/ {
         gsub(/[",]/, "");
         for (i = 1; i <= NF; i++) {
@@ -254,7 +252,7 @@ wait_and_set_ip_tag(){
 
     if [ -n "$IP" ]; then
       log_ok "获取到 IP: $IP，写入 tags"
-      qm set "$vmid" --tags "$IP"
+      sudo qm set "$vmid" --tags "$IP"
       return 0
     fi
     sleep "$interval"
@@ -266,7 +264,7 @@ wait_and_set_ip_tag(){
 
 create_vm_single(){
   check_root
-  check_cmd qm wget pct ip
+  check_cmd sudo qm wget pct ip
 
   show_distro_menu
   read -rp "请选择要创建的发行版 (1-10): " choice
@@ -281,7 +279,7 @@ create_vm_single(){
   download_image "$SUBDIR/$FILE"
 
   log_info "创建虚拟机 $NAME (VMID: $VMID)"
-  qm create "$VMID" \
+  sudo qm create "$VMID" \
     --name "$NAME" \
     --cpu host \
     --cores 2 \
@@ -294,31 +292,31 @@ create_vm_single(){
 
 
   log_info "导入磁盘到存储 $STORAGE"
-  qm importdisk "$VMID" "$CACHE_DIR/$FILE" "$STORAGE" --format qcow2 || {
+  sudo qm importdisk "$VMID" "$CACHE_DIR/$FILE" "$STORAGE" --format qcow2 || {
     log_err "导入磁盘失败"; exit 1;
   }
 
   log_info "配置 SCSI 磁盘 (20G) 和 CloudInit 双栈 DHCP"
-  qm set "$VMID" --scsi0 "$STORAGE:$VMID/vm-$VMID-disk-0.qcow2" || {
+  sudo qm set "$VMID" --scsi0 "$STORAGE:$VMID/vm-$VMID-disk-0.qcow2" || {
     log_err "挂载 scsi0 失败"; exit 1;
   }
-  qm resize "$VMID" scsi0 20G || {
+  sudo qm resize "$VMID" scsi0 20G || {
     log_err "调整磁盘大小失败"; exit 1;
   }
 
-  qm set "$VMID" --ide2 "$STORAGE:cloudinit" || {
+  sudo qm set "$VMID" --ide2 "$STORAGE:cloudinit" || {
     log_err "配置 cloudinit 失败"; exit 1;
   }
-  qm set "$VMID" --ipconfig0 "ip=dhcp,ip6=dhcp" || {
+  sudo qm set "$VMID" --ipconfig0 "ip=dhcp,ip6=dhcp" || {
     log_err "配置 IP 为双栈 DHCP 失败"; exit 1;
   }
 
-  qm set "$VMID" --boot c --bootdisk scsi0
-  qm set "$VMID" --serial0 socket --vga serial0
-  qm set "$VMID" --description "$NOTES_TEXT"
+  sudo qm set "$VMID" --boot c --bootdisk scsi0
+  sudo qm set "$VMID" --serial0 socket --vga serial0
+  sudo qm set "$VMID" --description "$NOTES_TEXT"
 
   log_info "启动虚拟机并等待 IP"
-  qm start "$VMID" || { log_err "启动虚拟机失败"; exit 1; }
+  sudo qm start "$VMID" || { log_err "启动虚拟机失败"; exit 1; }
 
   wait_and_set_ip_tag "$VMID" 180
 
@@ -329,15 +327,15 @@ create_vm_single(){
 
 update_ip_tags(){
   check_root
-  check_cmd qm pct ip
+  check_cmd sudo qm sudo pct ip
 
   echo "开始处理本地节点所有虚拟机和容器..."
 
   # QEMU 虚拟机
-  QMIDS=$(qm list | awk 'NR>1 {print $1}')
+  QMIDS=$(sudo qm list | awk 'NR>1 {print $1}')
   for VMID in $QMIDS; do
     echo "处理 QEMU 虚拟机 $VMID ..."
-    IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null | awk '
+    IP=$(sudo qm guest cmd "$VMID" network-get-interfaces 2>/dev/null | awk '
       /"ip-address"/ {
         gsub(/[",]/, "");
         for (i = 1; i <= NF; i++) {
@@ -355,15 +353,15 @@ update_ip_tags(){
       echo "  未获取到IP (可能未安装 qemu-guest-agent 或虚拟机未运行)"; continue;
     fi
     echo "  获取到IP: $IP"
-    qm set "$VMID" --tags "$IP"
+    sudo qm set "$VMID" --tags "$IP"
     echo "  已将IP写入虚拟机tags"
   done
 
   # LXC 容器
-  CTIDS=$(pct list | awk 'NR>1 {print $1}')
+  CTIDS=$(sudo pct list | awk 'NR>1 {print $1}')
   for CTID in $CTIDS; do
     echo "处理 LXC 容器 $CTID ..."
-    IP=$(pct exec "$CTID" -- ip -4 addr show | awk '
+    IP=$(sudo pct exec "$CTID" -- ip -4 addr show | awk '
       /inet / {
         for (i = 1; i <= NF; i++) {
           if ($i ~ /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\//) {
@@ -380,7 +378,7 @@ update_ip_tags(){
       echo "  未获取到IP (容器未运行或网络未配置)"; continue;
     fi
     echo "  获取到IP: $IP"
-    pct set "$CTID" --tags "$IP"
+    sudo pct set "$CTID" --tags "$IP"
     echo "  已将IP写入容器 tags 标签"
   done
 
@@ -394,14 +392,14 @@ clear_cache(){
 
   # 若缓存目录存在，则递归删除
   if [ -d "$CACHE_DIR" ]; then
-    rm -rf "$CACHE_DIR" 2>/dev/null || true
+    sudo rm -rf "$CACHE_DIR" 2>/dev/null || true
     echo "缓存目录已删除。"
   else
     echo "缓存目录不存在，无需删除旧目录。"
   fi
 
   # 自动重建干净的缓存目录
-  mkdir -p "$CACHE_DIR"
+  sudo mkdir -p "$CACHE_DIR"
   echo "已重新创建空的缓存目录: $CACHE_DIR"
 }
 
