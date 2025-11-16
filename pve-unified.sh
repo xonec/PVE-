@@ -251,8 +251,10 @@ wait_and_set_ip_tag(){
     ')
 
     if [ -n "$IP" ]; then
-      log_ok "获取到 IP: $IP，写入 tags"
-      sudo qm set "$vmid" --tags "$IP"
+      local ip_tag
+      ip_tag="ip-$IP=blue"
+      log_ok "获取到 IP: $IP，写入 tags: $ip_tag"
+      sudo qm set "$vmid" --tags "$ip_tag"
       return 0
     fi
     sleep "$interval"
@@ -352,9 +354,10 @@ update_ip_tags(){
     if [ -z "$IP" ]; then
       echo "  未获取到IP (可能未安装 qemu-guest-agent 或虚拟机未运行)"; continue;
     fi
-    echo "  获取到IP: $IP"
-    sudo qm set "$VMID" --tags "$IP"
-    echo "  已将IP写入虚拟机tags"
+    ip_tag="ip-$IP=blue"
+    echo "  获取到IP: $IP，写入标签: $ip_tag"
+    sudo qm set "$VMID" --tags "$ip_tag"
+    echo "  已将IP写入虚拟机 tags"
   done
 
   # LXC 容器
@@ -377,8 +380,9 @@ update_ip_tags(){
     if [ -z "$IP" ]; then
       echo "  未获取到IP (容器未运行或网络未配置)"; continue;
     fi
-    echo "  获取到IP: $IP"
-    sudo pct set "$CTID" --tags "$IP"
+    ip_tag="ip-$IP=blue"
+    echo "  获取到IP: $IP，写入标签: $ip_tag"
+    sudo pct set "$CTID" --tags "$ip_tag"
     echo "  已将IP写入容器 tags 标签"
   done
 
